@@ -1,0 +1,62 @@
+name: Zytrano 自动续期
+
+on:
+  schedule:
+    - cron: '0 2 */2 * *'  # 每两天 UTC 02:00 运行（北京时间 10:00）
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装系统依赖（Chromium + Xvfb + 中文字体）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq chromium-browser xvfb ffmpeg fonts-noto-cjk
+
+      - name: 安装 Python 依赖
+        run: |
+          pip install pydoll-python httpx
+
+      - name: 运行脚本（带 Xvfb 虚拟显示 + 录屏）
+        env:
+          ZYTRANO_USERNAME: ${{ secrets.ZYTRANO_USERNAME }}
+          ZYTRANO_PASSWORD: ${{ secrets.ZYTRANO_PASSWORD }}
+          WXPUSHER_TOKEN:   ${{ secrets.WXPUSHER_TOKEN }}
+          WXPUSHER_UID:     ${{ secrets.WXPUSHER_UID }}
+          DISPLAY: ":99"
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+          sleep 1
+          ffmpeg -f x11grab -video_size 1280x720 -i :99 \
+            -codec:v libx264 -preset ultrafast -crf 30 -t 300 \
+            -movflags +faststart /tmp/recording.mp4 &
+          RECORD_PID=$!
+          sleep 1
+          timeout 285 python zytrano_renew.py || echo "脚本退出码: $?"
+          echo "=== 截图列表 ==="
+          ls -la ./screenshots/ 2>/dev/null || echo "无截图"
+          kill $RECORD_PID 2>/dev/null || true
+          wait $RECORD_PID 2>/dev/null || true
+          pkill Xvfb 2>/dev/null || true
+
+      - name: 上传截图和录屏（调试用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-files
+          path: |
+            ./screenshots/*.png
+            /tmp/recording.mp4
+          retention-days: 3

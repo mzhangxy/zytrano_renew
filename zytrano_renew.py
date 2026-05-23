@@ -344,8 +344,14 @@ def login(page, max_retries=2) -> bool:
                 timeout=10000,
             )
         except Exception:
-            log.warning("找不到用户名输入框，重试")
+            # 找不到表单——可能是网络慢导致第一次登录已成功，session cookie 还在，
+            # 再次导航到 /login 被服务器直接 302 到 /home
+            cur_url = page.url
+            log.warning(f"找不到用户名输入框，当前 URL: {cur_url}")
             take_screenshot(page, f"01_no_form_{attempt}")
+            if any(k in cur_url for k in ("/home", "/dashboard", "/servers")):
+                log.info("✅ 已在登录后页面，视为登录成功")
+                return True
             continue
 
         human_delay(0.5, 1.0)
@@ -390,13 +396,22 @@ def login(page, max_retries=2) -> bool:
             page.locator("button[type='submit']").first.click()
         log.info("已点击 Sign In，等待跳转...")
 
-        if wait_for_url_contains(page, "/home", 12) or \
-           wait_for_url_contains(page, "/servers", 5):
-            log.info("✅ 登录成功")
+        # 等待跳转，网络慢时可能需要 30s 以上
+        log.info("等待登录跳转（最多 30s）...")
+        success_url = False
+        for _ in range(60):   # 60 × 0.5s = 30s
+            cur = page.url
+            if any(k in cur for k in ("/home", "/dashboard", "/servers")):
+                success_url = True
+                break
+            time.sleep(0.5)
+
+        if success_url:
+            log.info(f"✅ 登录成功，当前 URL: {page.url}")
             take_screenshot(page, "02_login_success")
             return True
 
-        log.warning("登录后未跳转，重试")
+        log.warning(f"登录后未跳转（30s），当前 URL: {page.url}，重试")
         take_screenshot(page, f"02_login_fail_{attempt}")
 
     return False

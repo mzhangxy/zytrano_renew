@@ -330,13 +330,49 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
     return False
 
 
+# ── 登录状态检测 ──────────────────────────────────────────
+LOGGED_IN_URL_KEYS = ("/home", "/dashboard", "/servers")
+
+def is_logged_in_url(page) -> bool:
+    """仅凭 URL 判断是否已登录"""
+    return any(k in page.url for k in LOGGED_IN_URL_KEYS)
+
+def is_logged_in_page(page) -> bool:
+    """凭 URL 或页面内容（Credits / Dashboard 关键词）判断是否已登录"""
+    if is_logged_in_url(page):
+        return True
+    try:
+        # Home 页有 Credits 信息，可作为登录成功的强信号
+        body = page.inner_text("body") or ""
+        for kw in ("Credits", "Dashboard", "Servers", "Activity Logs"):
+            if kw in body:
+                log.info(f"[登录检测] 页面含关键词 '{kw}'，判断为已登录")
+                return True
+    except Exception:
+        pass
+    return False
+
 # ── 登录（重试次数 2）────────────────────────────────────
 def login(page, max_retries=2) -> bool:
     for attempt in range(1, max_retries + 1):
         log.info(f"登录 {attempt}/{max_retries} (用户: {mask(USERNAME)}) ...")
+
+        # ★ 修复1：navigate 前先检查——如果上次已登录，session cookie 还在，
+        #   服务器会直接 302 跳回 /home，根本不需要重新填表
+        if is_logged_in_page(page):
+            log.info(f"✅ navigate 前已检测到登录状态（URL: {page.url}），跳过登录流程")
+            return True
+
         if not navigate(page, LOGIN_URL):
             log.error("CF 验证失败，重试")
             continue
+
+        # ★ 修复2：navigate 之后立即再检查一次
+        #   /login 若被 302 跳转到 /home，page.url 此时已变，无需等表单
+        if is_logged_in_page(page):
+            log.info(f"✅ navigate 后已跳转到登录后页面（URL: {page.url}），视为登录成功")
+            take_screenshot(page, f"01_already_logged_in_{attempt}")
+            return True
 
         try:
             page.wait_for_selector(
@@ -344,13 +380,12 @@ def login(page, max_retries=2) -> bool:
                 timeout=10000,
             )
         except Exception:
-            # 找不到表单——可能是网络慢导致第一次登录已成功，session cookie 还在，
-            # 再次导航到 /login 被服务器直接 302 到 /home
             cur_url = page.url
             log.warning(f"找不到用户名输入框，当前 URL: {cur_url}")
             take_screenshot(page, f"01_no_form_{attempt}")
-            if any(k in cur_url for k in ("/home", "/dashboard", "/servers")):
-                log.info("✅ 已在登录后页面，视为登录成功")
+            # ★ 修复3：page 内容检测，不只看 URL
+            if is_logged_in_page(page):
+                log.info("✅ 已在登录后页面（URL或内容），视为登录成功")
                 return True
             continue
 
@@ -396,15 +431,21 @@ def login(page, max_retries=2) -> bool:
             page.locator("button[type='submit']").first.click()
         log.info("已点击 Sign In，等待跳转...")
 
-        # 等待跳转，网络慢时可能需要 30s 以上
+        # ★ 修复4：用 wait_for_url 替代轮询，更快响应
+        #   同时加 page 内容检测（Credits/Dashboard），兜底处理 URL 未变但已登录的情况
         log.info("等待登录跳转（最多 30s）...")
         success_url = False
-        for _ in range(60):   # 60 × 0.5s = 30s
-            cur = page.url
-            if any(k in cur for k in ("/home", "/dashboard", "/servers")):
+        try:
+            page.wait_for_url(
+                lambda url: any(k in url for k in ("/home", "/dashboard", "/servers")),
+                timeout=30000,
+            )
+            success_url = True
+        except Exception:
+            # wait_for_url 超时——再用内容检测兜底
+            if is_logged_in_page(page):
+                log.info("[登录检测] wait_for_url 超时但页面内容确认已登录")
                 success_url = True
-                break
-            time.sleep(0.5)
 
         if success_url:
             log.info(f"✅ 登录成功，当前 URL: {page.url}")

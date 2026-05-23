@@ -1,8 +1,8 @@
-name: Zytrano Auto Renew
+name: Zytrano Auto Renew (CloakBrowser)
 
 on:
   schedule:
-    - cron: '0 2 */2 * *'  # 每两天 UTC 02:00 运行（北京时间 10:00）
+    - cron: '0 2 */2 * *'  # 每两天 UTC 02:00（北京时间 10:00）
   workflow_dispatch:
 
 jobs:
@@ -11,46 +11,55 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Check out code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies (Chromium + Xvfb)
+      - name: 安装系统依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq chromium-browser xvfb
+          sudo apt-get install -y -qq \
+            xvfb \
+            fonts-noto-cjk \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxfixes3 libxrandr2 libgbm1 \
+            libasound2t64 || sudo apt-get install -y -qq libasound2
 
-      - name: Install Python dependencies
+      - name: 安装 Python 依赖
         run: |
-          pip install pydoll-python httpx
+          pip install cloakbrowser[geoip]
+          python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
-      - name: Run script
+      - name: 运行脚本
         env:
           ZYTRANO_USERNAME: ${{ secrets.ZYTRANO_USERNAME }}
           ZYTRANO_PASSWORD: ${{ secrets.ZYTRANO_PASSWORD }}
           WXPUSHER_TOKEN:   ${{ secrets.WXPUSHER_TOKEN }}
           WXPUSHER_UID:     ${{ secrets.WXPUSHER_UID }}
           DISPLAY: ":99"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: "llvmpipe"
         run: |
-          export DISPLAY=:99
           Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
-          sleep 1
-          timeout 285 python zytrano_renew.py || echo "Exit code: $?"
+          sleep 2
+          timeout 270 python zytrano_renew.py || echo "脚本退出码: $?"
           pkill Xvfb 2>/dev/null || true
 
-      - name: Upload screenshots (debug)
+      - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-files
           path: ./screenshots/*.png
+          if-no-files-found: ignore
           retention-days: 3
 
-      - name: Delete old workflow runs (keep latest 2)
+      - name: 清理旧 workflow 运行记录（保留最新 2 条）
         if: always()
         uses: actions/github-script@v7
         with:

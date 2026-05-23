@@ -249,92 +249,63 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
         dump_page_state("枚举失败")
         take_screenshot(page, "turnstile_frame_not_found")
 
-        # 降级：frame_locator
-        log.info("  降级尝试 frame_locator...")
-        cf_frame_loc = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
+        # 降级：用 iframe 元素坐标点击（选择器对 shadow-root 无效）
+        log.info("  降级：尝试 iframe 坐标点击...")
         fallback_clicked = False
         try:
-            cf_frame_loc.locator("body").wait_for(state="attached", timeout=5000)
-            log.info("  frame_locator body attached，尝试点击...")
-            for sel, desc in [
-                ("span.cb-i",            "span.cb-i"),
-                ("input[type=checkbox]", "checkbox"),
-                ("label",                "label"),
-            ]:
-                try:
-                    loc = cf_frame_loc.locator(sel).first
-                    loc.wait_for(state="attached", timeout=3000)
-                    loc.hover(timeout=2000)
-                    time.sleep(random.uniform(0.2, 0.5))
-                    loc.click(timeout=2000)
-                    log.info(f"  ✅ 降级点击成功: {desc}")
-                    fallback_clicked = True
-                    break
-                except Exception as fe:
-                    log.warning(f"  降级 [{desc}] 失败: {fe}")
+            iframe_el = page.locator('iframe[src*="challenges.cloudflare.com"]').first
+            box = iframe_el.bounding_box()
+            log.info(f"  [诊断] 降级 iframe bounding_box={box}")
+            if box:
+                x = box["x"] + 25
+                y = box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                time.sleep(random.uniform(0.2, 0.4))
+                page.mouse.click(x, y)
+                log.info(f"  ✅ 降级坐标点击 ({x:.0f}, {y:.0f})")
+                fallback_clicked = True
+            else:
+                log.error("  [诊断] 降级 iframe bounding_box 为 None")
         except Exception as fe:
-            log.warning(f"  frame_locator body 未 attach: {fe}")
+            log.error(f"  降级坐标点击失败: {fe}")
 
         if not fallback_clicked:
-            log.error("【Turnstile 阶段2】所有降级方式均失败，放弃 Turnstile")
+            log.error("【Turnstile 阶段2】降级坐标点击也失败，放弃 Turnstile")
             return False
     else:
         log.info(f"【Turnstile 阶段2】frame URL: {cf_frame.url[:120]}")
         time.sleep(1)  # 给 iframe 内部 JS 初始化
 
-        # ── 阶段3：在 frame 内点击 checkbox ─────────────────────
-        log.info("【Turnstile 阶段3】在 frame 内查找并点击 checkbox...")
+        # ── 阶段3：直接坐标点击（选择器方式对二层 shadow-root 无效，已确认）──
+        log.info("【Turnstile 阶段3】坐标点击 checkbox...")
 
-        # 先打印 frame 内部 DOM 概况供诊断
+        # 诊断：打印 frame body，确认 iframe 内 DOM 状态
         try:
-            inner_html_snippet = cf_frame.locator("body").inner_html(timeout=3000)[:400]
-            log.info(f"  [诊断/frame body 前400字符] {inner_html_snippet!r}")
+            inner_html_snippet = cf_frame.locator("body").inner_html(timeout=2000)[:200]
+            log.info(f"  [诊断/frame body 前200字符] {inner_html_snippet!r}")
         except Exception as e:
-            log.warning(f"  [诊断/frame body] 读取失败: {e}")
+            log.debug(f"  [诊断/frame body] 读取失败（正常，二层 shadow-root）: {e}")
 
-        selectors = [
-            ("span.cb-i",            "视觉勾选框 span.cb-i"),
-            ("input[type=checkbox]", "原始 checkbox"),
-            ("label",                "label 整体"),
-            (".cb-lb",               "cb-lb 容器"),
-        ]
         clicked = False
-        for sel, desc in selectors:
-            try:
-                loc = cf_frame.locator(sel).first
-                loc.wait_for(state="attached", timeout=4000)
-                bbox = loc.bounding_box()
-                log.info(f"  [{desc}] attached，bbox={bbox}")
-                loc.hover(timeout=3000)
-                time.sleep(random.uniform(0.2, 0.5))
-                loc.click(timeout=3000)
-                log.info(f"  ✅ 点击成功: {desc}")
+        try:
+            frame_el = cf_frame.frame_element()
+            box = frame_el.bounding_box()
+            log.info(f"  [诊断] frame bounding_box={box}")
+            if box:
+                x = box["x"] + 25
+                y = box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                time.sleep(random.uniform(0.2, 0.4))
+                page.mouse.click(x, y)
+                log.info(f"  ✅ 坐标点击 ({x:.0f}, {y:.0f})")
                 clicked = True
-                break
-            except Exception as e:
-                log.warning(f"  [{desc}] 失败: {e}")
+            else:
+                log.error("  [诊断] bounding_box 返回 None，iframe 可能不可见或未渲染")
+        except Exception as e:
+            log.error(f"  坐标点击失败: {e}")
 
         if not clicked:
-            log.warning("【Turnstile 阶段3】所有选择器失败，尝试坐标兜底...")
-            try:
-                frame_el = cf_frame.frame_element()
-                box = frame_el.bounding_box()
-                log.info(f"  [诊断] frame element bounding_box={box}")
-                if box:
-                    x = box["x"] + 25
-                    y = box["y"] + box["height"] / 2
-                    page.mouse.move(x, y)
-                    time.sleep(random.uniform(0.2, 0.4))
-                    page.mouse.click(x, y)
-                    log.info(f"  坐标点击 ({x:.0f}, {y:.0f})")
-                    clicked = True
-                else:
-                    log.error("  [诊断] bounding_box 返回 None，iframe 可能不可见")
-            except Exception as e:
-                log.error(f"  坐标点击失败: {e}")
-
-        if not clicked:
-            log.error("【Turnstile 阶段3】所有点击方式均失败")
+            log.error("【Turnstile 阶段3】坐标点击失败")
             dump_frames("阶段3失败")
             take_screenshot(page, "turnstile_click_failed")
             return False
@@ -437,10 +408,33 @@ def get_servers_info(page) -> list[dict]:
         return []
 
     time.sleep(3)
+
+    # 滚动到底部确保所有卡片（含续期按钮）渲染出来
+    log.info("[服务器页] 滚动页面加载全部内容...")
+    js_eval(page, "(() => { window.scrollTo(0, document.body.scrollHeight); })()")
+    time.sleep(1)
+    js_eval(page, "(() => { window.scrollTo(0, 0); })()")
+    time.sleep(1)
+
     take_screenshot(page, "03_servers_page")
 
-    html = js_eval(page, "return document.body.innerHTML") or ""
-    server_ids = re.findall(r"handleServerRenew\(['\"]([^'\"]+)['\"]\)", html)
+    # ★ 修复：page.evaluate 不能裸写 return，必须用箭头函数
+    html = js_eval(page, "() => document.body.innerHTML") or ""
+    log.info(f"[诊断] innerHTML 长度: {len(html)} 字符")
+
+    if "handleServerRenew" in html:
+        idx = html.index("handleServerRenew")
+        log.info(f"[诊断] handleServerRenew 片段: ...{html[max(0,idx-30):idx+80]}...")
+    else:
+        log.warning("[诊断] innerHTML 中未找到 handleServerRenew，打印前 500 字符：")
+        log.warning(f"  {html[:500]!r}")
+        try:
+            body_text = page.inner_text("body")
+            log.info(f"[诊断] body inner_text 前 300 字: {body_text[:300]!r}")
+        except Exception as e:
+            log.warning(f"[诊断] inner_text 失败: {e}")
+
+    server_ids = re.findall(r"handleServerRenew\(['\"]([^\'\"]+)[\'\"]\)", html)
     log.info(f"找到服务器 ID: {[mask(s) for s in server_ids]}")
 
     text = get_text(page)
@@ -483,7 +477,7 @@ def renew_server(page, server_id: str) -> bool:
     log.info(f"续期服务器 {mask(server_id)} ...")
     human_delay(0.5, 1.0)
 
-    result = js_eval(page, f"handleServerRenew('{server_id}'); return 'called';")
+    result = js_eval(page, f"() => {{ handleServerRenew('{server_id}'); return 'called'; }}")
     log.info(f"handleServerRenew 调用结果: {result} (server: {mask(server_id)})")
     time.sleep(3)
 

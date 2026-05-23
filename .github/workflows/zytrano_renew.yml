@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            xvfb \
+            xvfb ffmpeg \
             fonts-noto-cjk \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
             libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
@@ -35,7 +35,7 @@ jobs:
           pip install cloakbrowser[geoip]
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
-      - name: 运行脚本
+      - name: 运行脚本（含录屏）
         env:
           ZYTRANO_USERNAME: ${{ secrets.ZYTRANO_USERNAME }}
           ZYTRANO_PASSWORD: ${{ secrets.ZYTRANO_PASSWORD }}
@@ -45,17 +45,42 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: "llvmpipe"
         run: |
+          # 启动 Xvfb
           Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+          XVFB_PID=$!
           sleep 2
-          timeout 270 python zytrano_renew.py || echo "脚本退出码: $?"
-          pkill Xvfb 2>/dev/null || true
 
-      - name: 上传截图
+          # 启动录屏
+          ffmpeg -f x11grab -video_size 1280x720 -framerate 15 -i :99 \
+            -codec:v libx264 -preset ultrafast -crf 28 \
+            -pix_fmt yuv420p -movflags +faststart /tmp/recording.mp4 \
+            > /tmp/ffmpeg.log 2>&1 &
+          RECORD_PID=$!
+          sleep 2
+
+          # 运行主脚本
+          timeout 270 python zytrano_renew.py || echo "脚本退出码: $?"
+
+          echo "=== 截图目录 ==="
+          ls -la ./screenshots/ || echo "无截图"
+
+          # 停止录屏和 Xvfb
+          sleep 2
+          kill $RECORD_PID 2>/dev/null || true
+          wait $RECORD_PID 2>/dev/null || true
+          kill $XVFB_PID  2>/dev/null || true
+
+          echo "录像大小: $(stat -c%s /tmp/recording.mp4 2>/dev/null || echo 0) bytes"
+
+      - name: 上传截图和录屏
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-files
-          path: ./screenshots/*.png
+          path: |
+            ./screenshots/*.png
+            /tmp/recording.mp4
+            /tmp/ffmpeg.log
           if-no-files-found: ignore
           retention-days: 3
 

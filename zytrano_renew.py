@@ -155,37 +155,63 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
                                  └─ div.cb-c > label > span.cb-i   ← 视觉勾选框，click 这里
                                                       input[type=checkbox] ← 实际 checkbox
 
-    Playwright frame_locator 可穿透跨域 iframe（不受 closed shadow-root 限制，
-    因为它走的是 CDP 协议而非 JS）。
-    点 span.cb-i 而非 input[type=checkbox]，与真人点击行为一致。
+    关键修复：
+    1. cf-turnstile-response input 在 closed shadow-root 内，普通 querySelector 找不到，
+       须用递归穿透所有 shadow root 的 JS 写法检查 token。
+    2. iframe 本身也在 shadow-root 内，wait_for_selector 须用 pierce: 伪类穿透，
+       或降级为直接用 frame_locator 探测。
+    3. 静默等待时间延长到 15s（GitHub Actions 环境指纹评估耗时更长）。
     """
 
+    # ★ 修复1：递归穿透所有 shadow root 检查 token
     def token_ready() -> bool:
         val = js_eval(page, """
             (() => {
-                const el = document.querySelector('input[name="cf-turnstile-response"]');
+                function deepQuery(root, sel) {
+                    let el = root.querySelector(sel);
+                    if (el) return el;
+                    for (const host of root.querySelectorAll('*')) {
+                        if (host.shadowRoot) {
+                            el = deepQuery(host.shadowRoot, sel);
+                            if (el) return el;
+                        }
+                    }
+                    return null;
+                }
+                const el = deepQuery(document, 'input[name="cf-turnstile-response"]');
                 return el ? (el.value || '').length > 10 : false;
             })()
         """)
         return bool(val)
 
-    # 阶段1：等 3s 看是否静默通过（CloakBrowser 偶尔能做到）
-    log.info("等待 Turnstile 静默通过（3s）...")
-    for _ in range(6):
+    # ★ 修复2：静默等待延长到 15s（30 × 0.5s）
+    log.info("等待 Turnstile 静默通过（最多 15s）...")
+    for i in range(30):
         if token_ready():
-            log.info("✅ Turnstile 静默通过，无需点击")
+            log.info(f"✅ Turnstile 静默通过（{i * 0.5:.1f}s），无需点击")
             return True
         time.sleep(0.5)
 
-    # 阶段2：等 iframe 加载完成
+    # ★ 修复3：iframe 在 closed shadow-root 内，用 pierce: 穿透，失败则降级
     log.info("静默未过，等待 Turnstile iframe 加载...")
+    iframe_found = False
     try:
         page.wait_for_selector(
-            'iframe[src*="challenges.cloudflare.com"]',
-            timeout=10000,
+            "pierce/iframe[src*='challenges.cloudflare.com']",
+            timeout=12000,
         )
+        iframe_found = True
     except Exception:
-        log.warning("Turnstile iframe 未出现")
+        # pierce 不支持时降级：直接用 frame_locator 探测 iframe 内容
+        try:
+            cf_frame_test = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
+            cf_frame_test.locator("body").wait_for(state="attached", timeout=8000)
+            iframe_found = True
+        except Exception:
+            log.warning("Turnstile iframe 未出现")
+            return False
+
+    if not iframe_found:
         return False
 
     time.sleep(1)  # 给 iframe 内部 JS 初始化的时间
@@ -194,13 +220,11 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
     log.info("用 frame_locator 穿透 iframe 点击 checkbox...")
     cf_frame = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
 
-    # 按 DevTools 确认的结构，优先尝试 span.cb-i（视觉勾选框）
-    # 其余作为兜底
     selectors = [
-        ("span.cb-i",           "视觉勾选框 span.cb-i"),
-        ("input[type=checkbox]","原始 checkbox"),
-        ("label",               "label 整体"),
-        (".cb-lb",              "cb-lb 容器"),
+        ("span.cb-i",            "视觉勾选框 span.cb-i"),
+        ("input[type=checkbox]", "原始 checkbox"),
+        ("label",                "label 整体"),
+        (".cb-lb",               "cb-lb 容器"),
     ]
 
     clicked = False
@@ -208,7 +232,6 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
         try:
             loc = cf_frame.locator(sel).first
             loc.wait_for(state="attached", timeout=4000)
-            # 模拟真人：先 hover 再 click
             loc.hover(timeout=3000)
             time.sleep(random.uniform(0.2, 0.5))
             loc.click(timeout=3000)
@@ -219,14 +242,12 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
             log.debug(f"  [{desc}] 失败: {e}")
 
     if not clicked:
-        # 终极兜底：拿到 iframe bounding_box，点击左侧 checkbox 位置
         log.warning("所有 frame_locator 选择器均失败，尝试坐标点击...")
         try:
             box = page.locator(
                 'iframe[src*="challenges.cloudflare.com"]'
             ).first.bounding_box()
             if box:
-                # checkbox 在 iframe 内左侧约 25px、垂直居中
                 x = box["x"] + 25
                 y = box["y"] + box["height"] / 2
                 page.mouse.move(x, y)
@@ -255,8 +276,8 @@ def click_turnstile_checkbox(page, timeout=30) -> bool:
     log.error("Turnstile token 等待超时")
     return False
 
-# ── 登录 ──────────────────────────────────────────────────
-def login(page, max_retries=3) -> bool:
+# ── 登录（★ 修复4：重试次数改为 2）─────────────────────────
+def login(page, max_retries=2) -> bool:
     for attempt in range(1, max_retries + 1):
         log.info(f"登录 {attempt}/{max_retries} (用户: {mask(USERNAME)}) ...")
         if not navigate(page, LOGIN_URL):

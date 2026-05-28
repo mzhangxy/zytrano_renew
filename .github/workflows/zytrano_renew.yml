@@ -2,7 +2,7 @@ name: Zytrano Auto Renew (CloakBrowser)
 
 on:
   schedule:
-    - cron: '0 2 */2 * *'  # 每两天 UTC 02:00（北京时间 10:00）
+    - cron: '0 2 */6 * *'  # 每两天 UTC 02:00（北京时间 10:00）
   workflow_dispatch:
 
 jobs:

@@ -46,7 +46,7 @@ jobs:
           GALLIUM_DRIVER: "llvmpipe"
         run: |
           # 启动 Xvfb (无头模式的替代方案)
-          Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+          Xvfb :99 -screen 0 1280x720x24 +extension RANDR > /dev/null 2>&1 &
           XVFB_PID=$!
           sleep 2
 
